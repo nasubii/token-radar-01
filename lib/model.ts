@@ -14,6 +14,10 @@
 //   reach              = 1 + 0.02 x min(chains - 1, 4)
 //   implied_value_usd  = round(base x growth x maturity x reach)
 //
+// Each row also carries an implied range: the same arithmetic at the category's first and
+// third quartile multiples, so a reader sees the spread of outcomes the peer set supports,
+// not just its median.
+//
 // No protocol name is ever special-cased: calibrate() reads only the snapshot's figures, and
 // score() applies the same arithmetic to every row. Protocols whose token already trades are
 // never ranked: they are the calibration set, and the dashboard shows them apart, at the
@@ -40,7 +44,7 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-export const MODEL_VERSION = 'comparables-2';
+export const MODEL_VERSION = 'comparables-3';
 export const EARLY_ROWS = 200;
 export const LIVE_ROWS = 30;
 
@@ -53,7 +57,9 @@ const GROWTH_CAP = 150;
 
 export interface Calibration {
   global_multiple: number;
-  by_category: Map<string, { multiple: number; comps: number }>;
+  global_low: number;
+  global_high: number;
+  by_category: Map<string, { multiple: number; low: number; high: number; comps: number }>;
   traded_count: number;
 }
 
@@ -61,6 +67,12 @@ function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+function quartile(sorted: number[], q: number): number {
+  if (sorted.length === 0) return 0;
+  const at = Math.min(sorted.length - 1, Math.max(0, Math.floor(q * sorted.length)));
+  return sorted[at]!;
 }
 
 /** The market's price of a TVL dollar, learned from the snapshot's traded protocols. */
@@ -79,12 +91,28 @@ export function calibrate(snapshot: Snapshot): Calibration {
     }
   }
   const global = all.length > 0 ? median(all) : 0.2;
-  const byCategory = new Map<string, { multiple: number; comps: number }>();
+  const sortedAll = [...all].sort((a, b) => a - b);
+  const globalQ1 = quartile(sortedAll, 0.25);
+  const globalQ3 = quartile(sortedAll, 0.75);
+  const shrinkTo = (center: number, n: number, anchor: number): number =>
+    Math.min(MULT_CAP, Math.max(MULT_FLOOR, (n * center + SHRINKAGE * anchor) / (n + SHRINKAGE)));
+  const byCategory = new Map<string, { multiple: number; low: number; high: number; comps: number }>();
   for (const [category, ratios] of perCategory) {
-    const shrunk = (ratios.length * median(ratios) + SHRINKAGE * global) / (ratios.length + SHRINKAGE);
-    byCategory.set(category, { multiple: Math.min(MULT_CAP, Math.max(MULT_FLOOR, shrunk)), comps: ratios.length });
+    const sorted = [...ratios].sort((a, b) => a - b);
+    const multiple = shrinkTo(median(ratios), ratios.length, global);
+    // The band shrinks toward the global band, not the global median, so a category with two
+    // near-identical peers still reports the spread the wider market supports.
+    const low = Math.min(multiple, shrinkTo(quartile(sorted, 0.25), ratios.length, globalQ1));
+    const high = Math.max(multiple, shrinkTo(quartile(sorted, 0.75), ratios.length, globalQ3));
+    byCategory.set(category, { multiple, low, high, comps: ratios.length });
   }
-  return { global_multiple: global, by_category: byCategory, traded_count: all.length };
+  return {
+    global_multiple: global,
+    global_low: Math.min(global, shrinkTo(globalQ1, all.length, globalQ1)),
+    global_high: Math.max(global, shrinkTo(globalQ3, all.length, globalQ3)),
+    by_category: byCategory,
+    traded_count: all.length,
+  };
 }
 
 const DAY_MS = 86_400_000;
@@ -99,6 +127,8 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
 
 export interface Score {
   implied: number;
+  implied_low: number;
+  implied_high: number;
   multiple: number;
   comps: number;
   growth_multiplier: number;
@@ -111,6 +141,8 @@ export interface Score {
 export function score(p: SnapshotProtocol, asOf: string, cal: Calibration): Score {
   const cat = p.category !== null ? cal.by_category.get(p.category) : undefined;
   const multiple = cat?.multiple ?? cal.global_multiple;
+  const lowMult = cat?.low ?? cal.global_low;
+  const highMult = cat?.high ?? cal.global_high;
   const comps = cat?.comps ?? 0;
   const growthPct = p.change_7d === null ? 0 : Math.min(GROWTH_CAP, Math.max(GROWTH_FLOOR, p.change_7d));
   const growth = 1 + (growthPct / 100) * GROWTH_WEIGHT;
@@ -118,7 +150,9 @@ export function score(p: SnapshotProtocol, asOf: string, cal: Calibration): Scor
   const maturity = age === null ? 0.85 : 0.75 + 0.25 * (1 - Math.exp(-age / 540));
   const reach = 1 + 0.02 * Math.min(Math.max(p.chains.length - 1, 0), 4);
   const implied = Math.max(1, Math.round(p.tvl_usd * multiple * growth * maturity * reach));
-  return { implied, multiple, comps, growth_multiplier: growth, maturity_multiplier: maturity, reach_multiplier: reach, age_days: age };
+  const implied_low = Math.max(1, Math.round(p.tvl_usd * Math.min(lowMult, multiple) * growth * maturity * reach));
+  const implied_high = Math.max(implied, Math.round(p.tvl_usd * Math.max(highMult, multiple) * growth * maturity * reach));
+  return { implied, implied_low, implied_high, multiple, comps, growth_multiplier: growth, maturity_multiplier: maturity, reach_multiplier: reach, age_days: age };
 }
 
 /** Whether the snapshot records no token for a protocol. */
@@ -159,6 +193,8 @@ export interface BoardRow {
   watchlist: boolean;
   age_days: number | null;
   implied_value_usd: number;
+  implied_low_usd: number;
+  implied_high_usd: number;
   model: {
     multiple: number;
     comps: number;
@@ -181,6 +217,14 @@ export interface LiveRow {
   multiple: number | null;
 }
 
+export interface CalibrationRow {
+  category: string;
+  comps: number;
+  multiple: number;
+  low: number;
+  high: number;
+}
+
 export interface RadarData {
   as_of: string;
   source: string;
@@ -191,6 +235,7 @@ export interface RadarData {
   watchlist_size: number;
   board_size: number;
   early_size: number;
+  calibration: CalibrationRow[];
   rows: BoardRow[];
   live: LiveRow[];
 }
@@ -228,6 +273,8 @@ export function buildBoard(snapshot: Snapshot, cal: Calibration): BoardRow[] {
     watchlist: watch.has(p.slug),
     age_days: s.age_days,
     implied_value_usd: s.implied,
+    implied_low_usd: s.implied_low,
+    implied_high_usd: s.implied_high,
     model: {
       multiple: round4(s.multiple),
       comps: s.comps,
@@ -304,12 +351,17 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
   const gas = gasUsd(chain);
   const capital = capitalFor(p.tvl_usd);
   const hold = holdDaysFor(age);
+  const second = p.chains.length > 1 ? p.chains[1]! : null;
   const steps = [
-    `Start with a fresh wallet funded only from an exchange withdrawal, holding the $${capital} you plan to farm plus gas money. Cost: ${gas} for the funding transaction on ${chain}. Time: 10 minutes.`,
+    `Start with a fresh wallet funded only from an exchange withdrawal, holding the $${capital} you plan to farm plus gas money, and use this one wallet for ${p.name} only, so its history stays clean and readable. Cost: ${gas} for the funding transaction on ${chain}. Time: 10 minutes.`,
     `${coreAction(p, capital, chain)}. Cost: $${capital} of capital plus ${gas} per transaction in gas. Time: 20 minutes to set up.`,
+    second !== null
+      ? `In week two, repeat a smaller version of the same action on ${second} (about $${Math.max(10, Math.round(capital / 4))}), because multi-chain users are the cohort protocols most often weight heaviest in a distribution. Cost: ${gasUsd(second)} per transaction on ${second}. Time: 15 minutes.`
+      : `In week two, add a second, different action inside ${p.name} (a second pool, a borrow against the first position, or a governance vote), because breadth inside one protocol is what separates a user from a passer-by. Cost: ${gas} in gas. Time: 15 minutes.`,
     `Repeat one small qualifying action every week (a deposit, a swap, a vote or a claim) so the wallet reads as a regular user, not a one-day visitor. Cost: ${gas} in gas a week. Time: 10 minutes a week.`,
     `Hold the position for at least ${hold} days and across two monthly snapshots; do not withdraw everything the same week a points or season page appears. Cost: the $${capital} stays deployed and exposed to the protocol's smart-contract risk. Time: ${hold} days.`,
     `Each Friday, open the protocol's own points, rewards or governance page from its official site and record your balance in a farm log; claim only from links the protocol itself publishes, never from a search ad or a direct message. Cost: nothing to check, and never pay a fee to claim. Time: 5 minutes a week.`,
+    `Exit rule: if a token and a claim date are announced, keep at least half the position untouched until the published snapshot or claim date has passed, then withdraw in two tranches a week apart rather than all at once. Cost: ${gas} per withdrawal. Time: 10 minutes per tranche.`,
   ];
   return steps.map((s) => (s.length > 600 ? `${s.slice(0, 596)}...` : s));
 }
@@ -346,6 +398,9 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
     early_size: board.filter((r) => !r.watchlist).length,
+    calibration: [...cal.by_category.entries()]
+      .map(([category, v]) => ({ category, comps: v.comps, multiple: round4(v.multiple), low: round4(v.low), high: round4(v.high) }))
+      .sort((a, b) => b.comps - a.comps || (a.category < b.category ? -1 : 1)),
     rows: board,
     live: liveRows(snapshot),
   };

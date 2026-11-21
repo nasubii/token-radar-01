@@ -41,7 +41,8 @@ $('model-note').innerHTML =
   `traded peers in this snapshot (shrunk toward the global median of <code>${R.global_multiple}×</code>), so the market ` +
   `prices the board, not a guess. Implied value = <code>TVL × peer multiple × growth × maturity × reach</code>, where ` +
   `growth follows the 7-day TVL change, maturity follows how long the protocol has run with no token, and reach ` +
-  `counts its chains. Open any row for its own arithmetic and farm plan.`;
+  `counts its chains. Each value also carries a range: the same arithmetic at the category's first and third quartile ` +
+  `multiples, the middle half of what its peers actually get. Open any row for its own arithmetic and farm plan.`;
 
 $('foot-note').textContent =
   `Source: ${R.source}. “Records no token” is what the snapshot's record says, not proof a token does not exist. ` +
@@ -119,6 +120,20 @@ document.querySelectorAll('#board th').forEach((th) => {
   });
 });
 
+// ---- fastest growers -------------------------------------------------------------------
+$('movers').innerHTML = [...R.rows]
+  .filter((r) => r.change_7d !== null)
+  .sort((a, b) => b.change_7d - a.change_7d)
+  .slice(0, 5)
+  .map(
+    (r) => `<button class="mover" data-slug="${esc(r.slug)}"><span class="mover-name">${esc(r.name)}</span><span class="up">${fmtPct(r.change_7d)}</span><span class="mover-sub">TVL ${fmtUsd(r.tvl_usd)} · implied ${fmtUsd(r.implied_value_usd)}</span></button>`,
+  )
+  .join('');
+$('movers').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-slug]');
+  if (b) openDetail(b.dataset.slug);
+});
+
 // ---- detail view ----------------------------------------------------------------------
 const detail = $('detail');
 const scrim = $('scrim');
@@ -127,6 +142,14 @@ let lastFocus = null;
 function bar(label, value, shown, max, amber) {
   const pct = Math.max(2, Math.min(100, (value / max) * 100));
   return `<div class="bar-row"><div class="bar-label"><span>${esc(label)}</span><b>${esc(shown)}</b></div><div class="bar${amber ? ' amber' : ''}"><i style="width:${pct}%"></i></div></div>`;
+}
+
+function rangeGeom(r) {
+  const max = r.implied_high_usd * 1.08;
+  const left = (r.implied_low_usd / max) * 100;
+  const width = Math.max(1.5, ((r.implied_high_usd - r.implied_low_usd) / max) * 100);
+  const dot = Math.min(99, (r.implied_value_usd / max) * 100);
+  return { left: left.toFixed(1), width: width.toFixed(1), dot: dot.toFixed(1) };
 }
 
 function openDetail(slug) {
@@ -153,6 +176,13 @@ function openDetail(slug) {
     ${bar('Maturity multiplier — time running with no token', m.maturity_multiplier, `${m.maturity_multiplier.toFixed(2)}×`, 1)}
     ${bar('Reach multiplier — chains served', m.reach_multiplier, `${m.reach_multiplier.toFixed(2)}×`, 1.1, true)}
     <p class="formula">${fmtUsd(r.tvl_usd)} × <b>${m.multiple.toFixed(2)}</b> × ${m.growth_multiplier.toFixed(2)} × ${m.maturity_multiplier.toFixed(2)} × ${m.reach_multiplier.toFixed(2)} = <b>${fmtUsd(r.implied_value_usd)}</b></p>
+    <h3>Implied range</h3>
+    <p class="range-note">Priced at the middle half of its peers' multiples instead of the median: <b>${fmtUsd(r.implied_low_usd)}</b> to <b>${fmtUsd(r.implied_high_usd)}</b>. The marker is the headline value.</p>
+    <div class="range" role="img" aria-label="Implied value range ${fmtUsd(r.implied_low_usd)} to ${fmtUsd(r.implied_high_usd)}, headline ${fmtUsd(r.implied_value_usd)}">
+      <span class="range-band" style="left:${rangeGeom(r).left}%;width:${rangeGeom(r).width}%"></span>
+      <span class="range-dot" style="left:${rangeGeom(r).dot}%"></span>
+    </div>
+    <div class="range-scale"><span>${fmtUsd(r.implied_low_usd)}</span><span>${fmtUsd(r.implied_high_usd)}</span></div>
     <h3>Farm plan</h3>
     <ol class="farm">${r.farm_steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>`;
   detail.hidden = false;
@@ -187,6 +217,19 @@ $('live-rows').innerHTML = R.live
       <td class="num">${fmtUsd(p.tvl_usd)}</td>
       <td class="num">${fmtUsd(p.mcap_usd)}</td>
       <td class="num">${p.multiple === null ? '—' : `${p.multiple.toFixed(2)}×`}</td>
+    </tr>`,
+  )
+  .join('');
+
+// ---- the calibration table --------------------------------------------------------------
+$('calib-rows').innerHTML = R.calibration
+  .slice(0, 14)
+  .map(
+    (c) => `<tr>
+      <td><span class="name">${esc(c.category)}</span></td>
+      <td class="num">${c.comps}</td>
+      <td class="num">${c.multiple.toFixed(2)}×</td>
+      <td class="num">${c.low.toFixed(2)}× – ${c.high.toFixed(2)}×</td>
     </tr>`,
   )
   .join('');

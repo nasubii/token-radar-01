@@ -30,18 +30,24 @@ staked, bridged or versioned products of tokens that already trade. Protocols wh
 already trades are never ranked; the dashboard shows them apart, at the market's own
 values, as the calibration set.
 
-Each row's farm plan is generated from the protocol's own record (category, first chain,
-TVL, age): a core action for its category, chain-aware gas costs, a weekly qualifying
-action, a holding window, and a claim-safety routine.
+Every row also carries an **implied range**: the same value priced at the category's
+first and third quartile multiples — the middle half of what its peers actually get — so
+a reader sees the spread the peer set supports, not just its median.
+
+Each row's farm plan is generated from the protocol's own record (category, chains, TVL,
+age): a core action for its category, chain-aware gas costs, a second action on a second
+chain or product, a weekly qualifying action, a holding window, a claim-safety routine
+and an exit rule for the day a token is announced.
 
 ## Layout
 
 - `main.ts` — the entry point: snapshot in, `board.json`, `data.js`, `dashboard/`,
   `screenshots/` and `dossier.json` out.
 - `lib/model.ts` — calibration, scoring, board building and farm plans.
-- `dashboard/` — a static page (board, filters, sorting, a detail view per protocol, and
-  the calibration set). It renders with no network.
-- `screenshots/` — the board, a detail view and a filtered view.
+- `dashboard/` — a static page (board, filters, sorting, fastest growers, a detail view
+  per protocol with its implied range, the calibration set, and the calibration table).
+  It renders with no network.
+- `screenshots/` — the board, a detail view, a filtered view and the calibration table.
 - `vendor/makefun-board.ts` — the kit's dossier library, vendored.
 
 ## Run it
