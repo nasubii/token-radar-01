@@ -1,5 +1,11 @@
 # Launch Radar — a token launch radar for make.fun token-radar-01
 
+![make.fun bounty](https://make.fun/badge/token-radar-01.svg)
+![rank](https://make.fun/badge/token-radar-01/nasubii/token-radar-01/rank.svg)
+![reward](https://make.fun/badge/token-radar-01/nasubii/token-radar-01/reward.svg)
+
+An entry in make.fun's [“Build the best token launch radar” bounty](https://make.fun/bounty/token-radar-01) ($1,325 in USDC).
+
 Ranks protocols that record no token yet by what a launch would be worth if their record
 stayed as it is, and shows how to farm each one.
 
