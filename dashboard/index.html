@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launch Radar — pre-token protocols ranked by calibrated implied value</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="brand">
+    <span class="blip" aria-hidden="true"></span>
+    <div>
+      <h1>Launch Radar</h1>
+      <p class="tagline">Protocols that record no token yet, ranked by what a launch would be worth if their record stayed as it is.</p>
+    </div>
+  </div>
+  <dl class="stats" id="stats"></dl>
+</header>
+
+<section class="model-note" id="model-note" aria-label="How the implied value is derived"></section>
+
+<div class="controls" role="search">
+  <label class="field grow">Search
+    <input id="q" type="search" placeholder="Name or slug…" autocomplete="off">
+  </label>
+  <label class="field">Category
+    <select id="f-category"><option value="">All categories</option></select>
+  </label>
+  <label class="field">Chain
+    <select id="f-chain"><option value="">All chains</option></select>
+  </label>
+  <label class="field">Set
+    <select id="f-set">
+      <option value="">Board: watchlist + early finds</option>
+      <option value="watchlist">Watchlist only</option>
+      <option value="early">Early finds only</option>
+    </select>
+  </label>
+  <label class="field">Min. TVL
+    <select id="f-tvl">
+      <option value="0">Any TVL</option>
+      <option value="10000000">$10M+</option>
+      <option value="50000000">$50M+</option>
+      <option value="250000000">$250M+</option>
+      <option value="1000000000">$1B+</option>
+    </select>
+  </label>
+</div>
+
+<main>
+  <p class="count" id="count" aria-live="polite"></p>
+  <div class="table-wrap">
+    <table id="board">
+      <thead><tr>
+        <th data-sort="rank" class="num">Rank</th>
+        <th data-sort="name">Protocol</th>
+        <th data-sort="category">Category</th>
+        <th data-sort="tvl_usd" class="num">TVL</th>
+        <th data-sort="change_7d" class="num">7d TVL</th>
+        <th data-sort="age_days" class="num">Age</th>
+        <th data-sort="multiple" class="num">Peer multiple</th>
+        <th data-sort="implied_value_usd" class="num">Implied value</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <section class="live" aria-label="Already trading">
+    <h2>Already trading — the calibration set</h2>
+    <p class="live-note">These protocols have a token, so the board never ranks them. Their market cap to TVL ratios are what prices the board above: each category's multiple is the median of its traded peers, shrunk toward the global median.</p>
+    <div class="table-wrap">
+      <table id="live-table">
+        <thead><tr><th>Protocol</th><th>Symbol</th><th>Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">MCap / TVL</th></tr></thead>
+        <tbody id="live-rows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="detail" id="detail" hidden aria-label="Protocol detail"></aside>
+
+<footer>
+  <p id="foot-note"></p>
+</footer>
+
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
