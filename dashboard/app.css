@@ -79,6 +79,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .up { color: var(--green); } .down { color: var(--red); }
 .implied { color: var(--accent); font-weight: 600; }
 
+.range-cell { color: var(--muted); font-size: 12.5px; }
+#scatter { width: 100%; max-width: 860px; height: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin: 4px 0 10px; }
+
 .movers { margin: 24px 0 4px; }
 .movers h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin-bottom: 10px; }
 .mover-row { display: flex; gap: 10px; flex-wrap: wrap; }

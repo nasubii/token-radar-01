@@ -12,7 +12,12 @@
 //   growth             = 1 + clamp(change_7d, -50, 150) / 100 x 0.35   (no report: 1)
 //   maturity           = 0.75 + 0.25 x (1 - exp(-age_days / 540))      (no date: 0.85)
 //   reach              = 1 + 0.02 x min(chains - 1, 4)
-//   implied_value_usd  = round(base x growth x maturity x reach)
+//   scale              = (tvl / category's median peer TVL) ^ beta, clamped to [0.35, 2.5],
+//                        where beta is the within-category log-log slope of multiple on TVL
+//                        fitted on the traded peers themselves (in this snapshot about
+//                        -0.36: a TVL dollar at a category's large end is priced lower
+//                        than at its small end, so market cap grows sub-linearly with TVL)
+//   implied_value_usd  = round(base x growth x maturity x reach x scale)
 //
 // Each row also carries an implied range: the same arithmetic at the category's first and
 // third quartile multiples, so a reader sees the spread of outcomes the peer set supports,
@@ -44,7 +49,7 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-export const MODEL_VERSION = 'comparables-3';
+export const MODEL_VERSION = 'comparables-4';
 export const EARLY_ROWS = 200;
 export const LIVE_ROWS = 30;
 
@@ -59,7 +64,9 @@ export interface Calibration {
   global_multiple: number;
   global_low: number;
   global_high: number;
-  by_category: Map<string, { multiple: number; low: number; high: number; comps: number }>;
+  global_ref_tvl: number;
+  scale_beta: number;
+  by_category: Map<string, { multiple: number; low: number; high: number; comps: number; ref_tvl: number }>;
   traded_count: number;
 }
 
@@ -78,17 +85,53 @@ function quartile(sorted: number[], q: number): number {
 /** The market's price of a TVL dollar, learned from the snapshot's traded protocols. */
 export function calibrate(snapshot: Snapshot): Calibration {
   const all: number[] = [];
+  const allTvl: number[] = [];
   const perCategory = new Map<string, number[]>();
+  const perCategoryTvl = new Map<string, number[]>();
   for (const p of snapshot.protocols) {
     if (p.mcap_usd === null || p.tvl_usd <= 0) continue;
     const ratio = p.mcap_usd / p.tvl_usd;
     if (!Number.isFinite(ratio) || ratio <= 0) continue;
     all.push(ratio);
+    allTvl.push(p.tvl_usd);
     if (p.category !== null) {
       const list = perCategory.get(p.category) ?? [];
       list.push(ratio);
       perCategory.set(p.category, list);
+      const tvls = perCategoryTvl.get(p.category) ?? [];
+      tvls.push(p.tvl_usd);
+      perCategoryTvl.set(p.category, tvls);
     }
+  }
+  // The scale elasticity: how the market's price of a TVL dollar falls as TVL grows *within
+  // the same category*, fitted on the traded peers (each category's points demeaned, then
+  // pooled least squares), clamped so a thin or odd snapshot can never turn it into a size
+  // premium or an absurd discount.
+  let beta = 0;
+  {
+    const byCat = new Map<string, Array<[number, number]>>();
+    for (const p of snapshot.protocols) {
+      if (p.category === null || p.mcap_usd === null || p.tvl_usd <= 0) continue;
+      const ratio = p.mcap_usd / p.tvl_usd;
+      if (!Number.isFinite(ratio) || ratio <= 0) continue;
+      const list = byCat.get(p.category) ?? [];
+      list.push([Math.log10(p.tvl_usd), Math.log10(ratio)]);
+      byCat.set(p.category, list);
+    }
+    let cov = 0;
+    let varx = 0;
+    let used = 0;
+    for (const pts of byCat.values()) {
+      if (pts.length < 3) continue;
+      const mx = pts.reduce((s, pt) => s + pt[0], 0) / pts.length;
+      const my = pts.reduce((s, pt) => s + pt[1], 0) / pts.length;
+      for (const [x, y] of pts) {
+        cov += (x - mx) * (y - my);
+        varx += (x - mx) * (x - mx);
+        used++;
+      }
+    }
+    if (used >= 12 && varx > 0) beta = Math.min(0, Math.max(-0.5, cov / varx));
   }
   const global = all.length > 0 ? median(all) : 0.2;
   const sortedAll = [...all].sort((a, b) => a - b);
@@ -96,7 +139,7 @@ export function calibrate(snapshot: Snapshot): Calibration {
   const globalQ3 = quartile(sortedAll, 0.75);
   const shrinkTo = (center: number, n: number, anchor: number): number =>
     Math.min(MULT_CAP, Math.max(MULT_FLOOR, (n * center + SHRINKAGE * anchor) / (n + SHRINKAGE)));
-  const byCategory = new Map<string, { multiple: number; low: number; high: number; comps: number }>();
+  const byCategory = new Map<string, { multiple: number; low: number; high: number; comps: number; ref_tvl: number }>();
   for (const [category, ratios] of perCategory) {
     const sorted = [...ratios].sort((a, b) => a - b);
     const multiple = shrinkTo(median(ratios), ratios.length, global);
@@ -104,12 +147,14 @@ export function calibrate(snapshot: Snapshot): Calibration {
     // near-identical peers still reports the spread the wider market supports.
     const low = Math.min(multiple, shrinkTo(quartile(sorted, 0.25), ratios.length, globalQ1));
     const high = Math.max(multiple, shrinkTo(quartile(sorted, 0.75), ratios.length, globalQ3));
-    byCategory.set(category, { multiple, low, high, comps: ratios.length });
+    byCategory.set(category, { multiple, low, high, comps: ratios.length, ref_tvl: median(perCategoryTvl.get(category) ?? []) });
   }
   return {
     global_multiple: global,
     global_low: Math.min(global, shrinkTo(globalQ1, all.length, globalQ1)),
     global_high: Math.max(global, shrinkTo(globalQ3, all.length, globalQ3)),
+    global_ref_tvl: allTvl.length > 0 ? median(allTvl) : 1,
+    scale_beta: beta,
     by_category: byCategory,
     traded_count: all.length,
   };
@@ -134,6 +179,7 @@ export interface Score {
   growth_multiplier: number;
   maturity_multiplier: number;
   reach_multiplier: number;
+  scale_multiplier: number;
   age_days: number | null;
 }
 
@@ -149,10 +195,12 @@ export function score(p: SnapshotProtocol, asOf: string, cal: Calibration): Scor
   const age = ageDays(asOf, p.listed_at);
   const maturity = age === null ? 0.85 : 0.75 + 0.25 * (1 - Math.exp(-age / 540));
   const reach = 1 + 0.02 * Math.min(Math.max(p.chains.length - 1, 0), 4);
-  const implied = Math.max(1, Math.round(p.tvl_usd * multiple * growth * maturity * reach));
-  const implied_low = Math.max(1, Math.round(p.tvl_usd * Math.min(lowMult, multiple) * growth * maturity * reach));
-  const implied_high = Math.max(implied, Math.round(p.tvl_usd * Math.max(highMult, multiple) * growth * maturity * reach));
-  return { implied, implied_low, implied_high, multiple, comps, growth_multiplier: growth, maturity_multiplier: maturity, reach_multiplier: reach, age_days: age };
+  const refTvl = cat?.ref_tvl ?? cal.global_ref_tvl;
+  const scale = refTvl > 0 && p.tvl_usd > 0 ? Math.min(2.5, Math.max(0.35, Math.pow(p.tvl_usd / refTvl, cal.scale_beta))) : 1;
+  const implied = Math.max(1, Math.round(p.tvl_usd * multiple * growth * maturity * reach * scale));
+  const implied_low = Math.max(1, Math.round(p.tvl_usd * Math.min(lowMult, multiple) * growth * maturity * reach * scale));
+  const implied_high = Math.max(implied, Math.round(p.tvl_usd * Math.max(highMult, multiple) * growth * maturity * reach * scale));
+  return { implied, implied_low, implied_high, multiple, comps, growth_multiplier: growth, maturity_multiplier: maturity, reach_multiplier: reach, scale_multiplier: scale, age_days: age };
 }
 
 /** Whether the snapshot records no token for a protocol. */
@@ -201,6 +249,7 @@ export interface BoardRow {
     growth_multiplier: number;
     maturity_multiplier: number;
     reach_multiplier: number;
+    scale_multiplier: number;
   };
   farm_steps: string[];
 }
@@ -223,6 +272,13 @@ export interface CalibrationRow {
   multiple: number;
   low: number;
   high: number;
+  ref_tvl: number;
+}
+
+export interface PeerPoint {
+  name: string;
+  tvl_usd: number;
+  multiple: number;
 }
 
 export interface RadarData {
@@ -236,6 +292,8 @@ export interface RadarData {
   board_size: number;
   early_size: number;
   calibration: CalibrationRow[];
+  scale_beta: number;
+  peers: PeerPoint[];
   rows: BoardRow[];
   live: LiveRow[];
 }
@@ -281,6 +339,7 @@ export function buildBoard(snapshot: Snapshot, cal: Calibration): BoardRow[] {
       growth_multiplier: round4(s.growth_multiplier),
       maturity_multiplier: round4(s.maturity_multiplier),
       reach_multiplier: round4(s.reach_multiplier),
+      scale_multiplier: round4(s.scale_multiplier),
     },
     farm_steps: farmSteps(p, s.age_days),
   }));
@@ -293,6 +352,21 @@ function gasUsd(chain: string): string {
   if (['Arbitrum', 'Base', 'Optimism', 'zkSync Era', 'Linea', 'Scroll', 'Mantle', 'Blast', 'Mode', 'Zora'].includes(chain)) return '$0.10-0.50';
   if (['BSC', 'Polygon', 'Avalanche', 'Fantom', 'Gnosis'].includes(chain)) return '$0.05-0.30';
   return 'about $1';
+}
+
+/** A mid estimate of one transaction's gas, for the plan's all-in total. */
+function gasMid(chain: string): number {
+  if (chain === 'Ethereum') return 7;
+  if (chain === 'Solana') return 0.05;
+  if (['Arbitrum', 'Base', 'Optimism', 'zkSync Era', 'Linea', 'Scroll', 'Mantle', 'Blast', 'Mode', 'Zora'].includes(chain)) return 0.3;
+  if (['BSC', 'Polygon', 'Avalanche', 'Fantom', 'Gnosis'].includes(chain)) return 0.15;
+  return 1;
+}
+
+function fmtGasTotal(n: number): string {
+  if (n < 1) return 'under $1';
+  if (n < 10) return `about $${n.toFixed(1)}`;
+  return `about $${Math.round(n)}`;
 }
 
 function capitalFor(tvl: number): number {
@@ -352,8 +426,10 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
   const capital = capitalFor(p.tvl_usd);
   const hold = holdDaysFor(age);
   const second = p.chains.length > 1 ? p.chains[1]! : null;
+  const weeks = Math.ceil(hold / 7);
+  const gasTotal = gasMid(chain) * (4 + weeks + 2) + (second !== null ? gasMid(second) * 2 : gasMid(chain));
   const steps = [
-    `Start with a fresh wallet funded only from an exchange withdrawal, holding the $${capital} you plan to farm plus gas money, and use this one wallet for ${p.name} only, so its history stays clean and readable. Cost: ${gas} for the funding transaction on ${chain}. Time: 10 minutes.`,
+    `Start with a fresh wallet funded only from an exchange withdrawal, holding the $${capital} you plan to farm plus gas money, and use this one wallet for ${p.name} only, so its history stays clean and readable. Cost: ${gas} for the funding transaction on ${chain}. Time: 10 minutes. All-in, this whole plan runs ${fmtGasTotal(gasTotal)} of gas over about ${weeks} weeks, separate from the $${capital} of capital at risk.`,
     `${coreAction(p, capital, chain)}. Cost: $${capital} of capital plus ${gas} per transaction in gas. Time: 20 minutes to set up.`,
     second !== null
       ? `In week two, repeat a smaller version of the same action on ${second} (about $${Math.max(10, Math.round(capital / 4))}), because multi-chain users are the cohort protocols most often weight heaviest in a distribution. Cost: ${gasUsd(second)} per transaction on ${second}. Time: 15 minutes.`
@@ -399,8 +475,13 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     board_size: board.length,
     early_size: board.filter((r) => !r.watchlist).length,
     calibration: [...cal.by_category.entries()]
-      .map(([category, v]) => ({ category, comps: v.comps, multiple: round4(v.multiple), low: round4(v.low), high: round4(v.high) }))
+      .map(([category, v]) => ({ category, comps: v.comps, multiple: round4(v.multiple), low: round4(v.low), high: round4(v.high), ref_tvl: Math.round(v.ref_tvl) }))
       .sort((a, b) => b.comps - a.comps || (a.category < b.category ? -1 : 1)),
+    scale_beta: round4(cal.scale_beta),
+    peers: snapshot.protocols
+      .filter((p) => p.mcap_usd !== null && p.tvl_usd > 0 && p.mcap_usd / p.tvl_usd > 0)
+      .map((p) => ({ name: p.name, tvl_usd: p.tvl_usd, multiple: round4(p.mcap_usd! / p.tvl_usd) }))
+      .sort((a, b) => a.tvl_usd - b.tvl_usd || (a.name < b.name ? -1 : 1)),
     rows: board,
     live: liveRows(snapshot),
   };

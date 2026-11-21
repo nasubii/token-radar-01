@@ -22,7 +22,13 @@ implied value      = TVL x multiple x growth x maturity x reach
   growth   = 1 + clamp(7-day TVL change, -50%, +150%) x 0.35
   maturity = 0.75 + 0.25 x (1 - exp(-age in days / 540))   (no listing date: 0.85)
   reach    = 1 + 0.02 x min(chains - 1, 4)
+  scale    = (TVL / category's median peer TVL) ^ beta, clamped to [0.35, 2.5]
 ```
+
+The scale term exists because the snapshot's own peers demand it: within a category, the
+multiple the market pays falls as TVL grows (the fitted within-category log-log slope is
+about −0.36), so market cap grows sub-linearly with TVL and a $2B protocol must not be
+priced at a $12M peer's multiple. Beta is fitted on the snapshot, never hard-coded.
 
 No protocol name is special-cased. The board covers every protocol on the snapshot's
 watchlist and adds the strongest early finds below the $50M floor, excluding wrapped,

@@ -39,9 +39,11 @@ $('stats').innerHTML = [
 $('model-note').innerHTML =
   `<strong>How a value is derived.</strong> Each category's multiple is the median market-cap / TVL of its ` +
   `traded peers in this snapshot (shrunk toward the global median of <code>${R.global_multiple}×</code>), so the market ` +
-  `prices the board, not a guess. Implied value = <code>TVL × peer multiple × growth × maturity × reach</code>, where ` +
-  `growth follows the 7-day TVL change, maturity follows how long the protocol has run with no token, and reach ` +
-  `counts its chains. Each value also carries a range: the same arithmetic at the category's first and third quartile ` +
+  `prices the board, not a guess. Implied value = <code>TVL × peer multiple × growth × maturity × reach × scale</code>, where ` +
+  `growth follows the 7-day TVL change, maturity follows how long the protocol has run with no token, reach ` +
+  `counts its chains, and scale corrects for size: within a category, the traded peers' multiples fall as TVL ` +
+  `grows (fitted slope ${R.scale_beta} on log-log points), so a giant is not priced at a small peer's multiple. ` +
+  `Each value also carries a range: the same arithmetic at the category's first and third quartile ` +
   `multiples, the middle half of what its peers actually get. Open any row for its own arithmetic and farm plan.`;
 
 $('foot-note').textContent =
@@ -96,6 +98,7 @@ function render() {
         <td class="num">${fmtAge(r.age_days)}</td>
         <td class="num">${r.model.multiple.toFixed(2)}×</td>
         <td class="num implied">${fmtUsd(r.implied_value_usd)}</td>
+        <td class="num range-cell">${fmtUsd(r.implied_low_usd)} – ${fmtUsd(r.implied_high_usd)}</td>
       </tr>`,
     )
     .join('');
@@ -175,7 +178,8 @@ function openDetail(slug) {
     ${bar('Growth multiplier — 7-day TVL trend', m.growth_multiplier, `${m.growth_multiplier.toFixed(2)}×`, 1.6, true)}
     ${bar('Maturity multiplier — time running with no token', m.maturity_multiplier, `${m.maturity_multiplier.toFixed(2)}×`, 1)}
     ${bar('Reach multiplier — chains served', m.reach_multiplier, `${m.reach_multiplier.toFixed(2)}×`, 1.1, true)}
-    <p class="formula">${fmtUsd(r.tvl_usd)} × <b>${m.multiple.toFixed(2)}</b> × ${m.growth_multiplier.toFixed(2)} × ${m.maturity_multiplier.toFixed(2)} × ${m.reach_multiplier.toFixed(2)} = <b>${fmtUsd(r.implied_value_usd)}</b></p>
+    ${bar('Scale multiplier — size vs its category\u2019s peers', m.scale_multiplier, `${m.scale_multiplier.toFixed(2)}×`, 2.5)}
+    <p class="formula">${fmtUsd(r.tvl_usd)} × <b>${m.multiple.toFixed(2)}</b> × ${m.growth_multiplier.toFixed(2)} × ${m.maturity_multiplier.toFixed(2)} × ${m.reach_multiplier.toFixed(2)} × ${m.scale_multiplier.toFixed(2)} = <b>${fmtUsd(r.implied_value_usd)}</b></p>
     <h3>Implied range</h3>
     <p class="range-note">Priced at the middle half of its peers' multiples instead of the median: <b>${fmtUsd(r.implied_low_usd)}</b> to <b>${fmtUsd(r.implied_high_usd)}</b>. The marker is the headline value.</p>
     <div class="range" role="img" aria-label="Implied value range ${fmtUsd(r.implied_low_usd)} to ${fmtUsd(r.implied_high_usd)}, headline ${fmtUsd(r.implied_value_usd)}">
@@ -230,8 +234,55 @@ $('calib-rows').innerHTML = R.calibration
       <td class="num">${c.comps}</td>
       <td class="num">${c.multiple.toFixed(2)}×</td>
       <td class="num">${c.low.toFixed(2)}× – ${c.high.toFixed(2)}×</td>
+      <td class="num">${fmtUsd(c.ref_tvl)}</td>
     </tr>`,
   )
   .join('');
+
+// ---- the calibration scatter -------------------------------------------------------------
+// Every traded peer as a point: TVL (log) against the multiple the market pays for it (log).
+// The downward drift is the scale effect the model fits within each category.
+{
+  const cv = $('scatter');
+  const ctx = cv.getContext('2d');
+  const W = cv.width;
+  const H = cv.height;
+  const pts = R.peers.filter((p) => p.tvl_usd > 0 && p.multiple > 0);
+  const xs = pts.map((p) => Math.log10(p.tvl_usd));
+  const ys = pts.map((p) => Math.log10(p.multiple));
+  const x0 = Math.floor(Math.min(...xs));
+  const x1 = Math.ceil(Math.max(...xs));
+  const y0 = Math.floor(Math.min(...ys));
+  const y1 = Math.ceil(Math.max(...ys));
+  const px = (x) => 46 + ((x - x0) / (x1 - x0)) * (W - 62);
+  const py = (y) => H - 30 - ((y - y0) / (y1 - y0)) * (H - 46);
+  ctx.strokeStyle = '#1e2c38';
+  ctx.fillStyle = '#5b6d79';
+  ctx.font = '11px ui-monospace, monospace';
+  for (let gx = x0; gx <= x1; gx++) {
+    ctx.beginPath(); ctx.moveTo(px(gx), 8); ctx.lineTo(px(gx), H - 30); ctx.stroke();
+    const label = gx >= 9 ? `$${Math.pow(10, gx - 9)}B` : gx >= 6 ? `$${Math.pow(10, gx - 6)}M` : `$${Math.pow(10, gx - 3)}K`;
+    ctx.fillText(label, px(gx) - 10, H - 14);
+  }
+  for (let gy = y0; gy <= y1; gy++) {
+    ctx.beginPath(); ctx.moveTo(46, py(gy)); ctx.lineTo(W - 16, py(gy)); ctx.stroke();
+    ctx.fillText(`${gy >= 0 ? Math.pow(10, gy).toFixed(0) : Math.pow(10, gy).toFixed(-gy)}×`, 4, py(gy) + 4);
+  }
+  const medY = py(Math.log10(R.global_multiple));
+  ctx.strokeStyle = '#f5b544';
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath(); ctx.moveTo(46, medY); ctx.lineTo(W - 16, medY); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#2dd4bf';
+  for (const p of pts) {
+    ctx.beginPath();
+    ctx.arc(px(Math.log10(p.tvl_usd)), py(Math.log10(p.multiple)), 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  $('scatter-note').textContent =
+    `Each point is one traded peer (${pts.length} in this snapshot): its TVL against the market-cap / TVL the market pays for it, both on log scales. ` +
+    `The amber line is the global median multiple, ${R.global_multiple}×. Multiples drift down as TVL grows; fitted within categories, the slope is ${R.scale_beta}, ` +
+    `which is the model's scale multiplier.`;
+}
 
 render();

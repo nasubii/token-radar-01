@@ -66,6 +66,7 @@
         <th data-sort="age_days" class="num">Age</th>
         <th data-sort="multiple" class="num">Peer multiple</th>
         <th data-sort="implied_value_usd" class="num">Implied value</th>
+        <th class="num">Implied range</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -84,9 +85,11 @@
   <section class="live calib" aria-label="Calibration by category">
     <h2>Calibration by category</h2>
     <p class="live-note">The multiples the market itself pays, category by category, from this snapshot's traded protocols. The band is the middle half of each category's peers (first to third quartile, shrunk the same way); a row's implied range is its own TVL priced at the band's ends.</p>
+    <canvas id="scatter" width="860" height="300" aria-label="Scatter of traded peers: TVL against market cap to TVL multiple, log scales"></canvas>
+    <p class="live-note" id="scatter-note"></p>
     <div class="table-wrap">
       <table id="calib-table">
-        <thead><tr><th>Category</th><th class="num">Traded peers</th><th class="num">Median multiple</th><th class="num">Middle-half band</th></tr></thead>
+        <thead><tr><th>Category</th><th class="num">Traded peers</th><th class="num">Median multiple</th><th class="num">Middle-half band</th><th class="num">Median peer TVL</th></tr></thead>
         <tbody id="calib-rows"></tbody>
       </table>
     </div>
